@@ -42,6 +42,30 @@ function saveConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
+// Quote a single arg for use inside a cmd /k string
+function quoteArg(arg) {
+  return /[\s"&|<>^]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
+}
+
+// Spawn in a new Windows Terminal tab, falling back to a new cmd window
+function spawnInNewTab(title, executable, args) {
+  const cmdLine = [executable, ...args].map(quoteArg).join(" ");
+  // Try Windows Terminal first (gives a tab in the current wt window)
+  const wt = execa(
+    "wt",
+    ["-w", "0", "new-tab", "--title", title, "--", "cmd", "/k", cmdLine],
+    { stdio: "ignore", detached: true }
+  );
+  wt.on("error", () => {
+    // wt not available — fall back to a plain new cmd window
+    execa("cmd", ["/c", "start", `"${title}"`, "cmd", "/k", cmdLine], {
+      stdio: "ignore",
+      shell: true,
+      detached: true
+    });
+  });
+}
+
 function waitForServer(url) {
   return new Promise((resolve) => {
     const check = () => {
@@ -151,19 +175,20 @@ async function main() {
     return;
   }
 
-  // Server mode
-  const spinner = ora("Starting llama-server...").start();
-
-  const server = execa("llama-server", [
+  // Server mode — open in a separate tab so logs don't clash with Claude
+  const serverArgs = [
     ...commonArgs,
     "--tools", "all",
     "--jinja",
     "--host", config.host,
     "--port", String(config.port)
-  ], { stdio: "inherit" });
+  ];
 
+  spawnInNewTab("Llama Server", "llama-server", serverArgs);
+
+  const spinner = ora("Waiting for llama-server to be ready...").start();
   await waitForServer(`http://${config.host}:${config.port}`);
-  spinner.succeed("Server ready");
+  spinner.succeed("Server ready  (see \"Llama Server\" tab for logs)");
 
   // Setup Claude env
   const env = {
@@ -185,8 +210,7 @@ async function main() {
     env
   });
 
-  // Cleanup
-  server.kill();
+  console.log(chalk.yellow("\nClaude exited. Close the \"Llama Server\" tab to stop the server."));
 }
 
 main();
