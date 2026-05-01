@@ -11,11 +11,25 @@ const http = require("http");
 const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const DEFAULT_CONFIG = {
-  modelDir: "D:\\AI\\Models",
+  modelDir: path.join(__dirname, "models"),
   host: "127.0.0.1",
   port: 8090,
   threads: 16
 };
+
+// Per-model presets matched by filename substring
+const MODEL_PRESETS = {
+  "Qwen3.5-9B":  { batch: 512, ctx: 64000, label: "FAST - recommended" },
+  "Qwen3.6-27B": { batch: 256, ctx: 4096,  label: "BALANCED" },
+  "Qwen3.6-35B": { batch: 128, ctx: 64000, label: "HEAVY - slow" },
+};
+
+function getPreset(filename) {
+  for (const [key, preset] of Object.entries(MODEL_PRESETS)) {
+    if (filename.includes(key)) return preset;
+  }
+  return { batch: 512, ctx: 8192, label: "" };
+}
 
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
@@ -42,6 +56,10 @@ function waitForServer(url) {
 async function main() {
   const config = loadConfig();
 
+  console.log(chalk.green("================================"));
+  console.log(chalk.green("        Qwen Launcher"));
+  console.log(chalk.green("================================\n"));
+
   // Ask for model directory
   const { modelDir } = await inquirer.prompt([
     {
@@ -61,49 +79,93 @@ async function main() {
   saveConfig(config);
 
   // Scan models
-  const models = fs.readdirSync(modelDir)
-    .filter(f => f.endsWith(".gguf"));
+  const models = fs.readdirSync(modelDir).filter(f => f.endsWith(".gguf"));
 
   if (models.length === 0) {
     console.log(chalk.red("❌ No .gguf models found"));
     process.exit(1);
   }
 
-  // Select model
+  // Select model — show preset label when available
   const { selectedModel } = await inquirer.prompt([
     {
       type: "list",
       name: "selectedModel",
       message: "Select model:",
-      choices: models
+      choices: models.map(m => {
+        const { label } = getPreset(m);
+        return { name: label ? `${m}  (${label})` : m, value: m };
+      })
     }
   ]);
 
   const modelPath = path.join(modelDir, selectedModel);
   const modelName = path.parse(selectedModel).name;
+  const preset = getPreset(selectedModel);
 
-  console.log(chalk.cyan(`\nModel: ${modelName}\n`));
+  // Select run mode
+  const { mode } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "mode",
+      message: "Run mode:",
+      choices: [
+        { name: "Server  (API mode → launches Claude CLI)", value: "server" },
+        { name: "CLI     (interactive chat in terminal)",   value: "cli" }
+      ]
+    }
+  ]);
 
-  // Start llama-server
+  console.log(chalk.cyan("\n================================"));
+  console.log(`Model  : ${modelName}`);
+  console.log(`Mode   : ${mode === "server" ? "llama-server" : "llama-cli"}`);
+  console.log(`Batch  : ${preset.batch}`);
+  console.log(`Context: ${preset.ctx}`);
+  console.log(chalk.cyan("================================\n"));
+
+  // Flags shared by both modes
+  const commonArgs = [
+    "-m", modelPath,
+    "-ngl", "999",
+    "-b", String(preset.batch),
+    "-t", String(config.threads),
+    "-tb", String(config.threads),
+    "-fa", "on",
+    "--ctx-size", String(preset.ctx),
+    "--cache-type-k", "q4_0",
+    "--cache-type-v", "q4_0",
+    "--temp", "0.2",
+    "--top-p", "0.9",
+    "--top-k", "40",
+    "--min-p", "0.05",
+    "--repeat-penalty", "1.1"
+  ];
+
+  // CLI mode — interactive chat, no Claude wrapper
+  if (mode === "cli") {
+    await execa("llama-cli", [
+      ...commonArgs,
+      "--mlock",
+      "--repeat-penalty", "1.02"
+    ], { stdio: "inherit" });
+    return;
+  }
+
+  // Server mode
   const spinner = ora("Starting llama-server...").start();
 
   const server = execa("llama-server", [
-    "-m", modelPath,
+    ...commonArgs,
+    "--tools", "all",
+    "--jinja",
     "--host", config.host,
-    "--port", config.port,
-    "-ngl", "999",
-    "-t", config.threads,
-    "--ctx-size", "64000"
-  ], {
-    stdio: "inherit"
-  });
+    "--port", String(config.port)
+  ], { stdio: "inherit" });
 
-  // Wait until server ready
   await waitForServer(`http://${config.host}:${config.port}`);
-
   spinner.succeed("Server ready");
 
-  // Setup env
+  // Setup Claude env
   const env = {
     ...process.env,
     ANTHROPIC_AUTH_TOKEN: "not_set",
