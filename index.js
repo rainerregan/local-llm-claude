@@ -19,16 +19,16 @@ const DEFAULT_CONFIG = {
 
 // Per-model presets matched by filename substring
 const MODEL_PRESETS = {
-  "Qwen3.5-9B":  { batch: 512, ctx: 64000, label: "FAST - recommended" },
-  "Qwen3.6-27B": { batch: 256, ctx: 4096,  label: "BALANCED" },
-  "Qwen3.6-35B": { batch: 128, ctx: 64000, label: "HEAVY - slow" },
+  "Qwen3.5-9B":  { batch: 4096, ctx: 262144, maxNewTokens: 4096, label: "FAST - recommended" },
+  "Qwen3.6-27B": { batch: 512, ctx: 262144, maxNewTokens: 4096, label: "BALANCED" },
+  "Qwen3.6-35B": { batch: 4096, ctx: 262144, maxNewTokens: 4096, label: "HEAVY - slow" },
 };
 
 function getPreset(filename) {
   for (const [key, preset] of Object.entries(MODEL_PRESETS)) {
     if (filename.includes(key)) return preset;
   }
-  return { batch: 512, ctx: 8192, label: "" };
+  return { batch: 512, ctx: 8192, maxNewTokens: 1024, label: "" };
 }
 
 function loadConfig() {
@@ -158,11 +158,16 @@ async function main() {
     "--ctx-size", String(preset.ctx),
     "--cache-type-k", "q4_0",
     "--cache-type-v", "q4_0",
-    "--temp", "0.2",
-    "--top-p", "0.9",
-    "--top-k", "40",
-    "--min-p", "0.05",
-    "--repeat-penalty", "1.1"
+    "--temp", "0.6",
+    "--n-predict", String(preset.maxNewTokens),
+    "--top-p", "0.95",
+    "--top-k", "20",
+    "--min-p", "0.0",
+    "--presence-penalty", "0.0",
+    "--repeat-penalty", "1.0",
+    "--stream", // important for Claude to start generating before the full response is ready
+    "--reasoning-budget", "1024",
+    "--reasoning-budget-message", "... maximum reasoning budget reached, answering now..."
   ];
 
   // CLI mode — interactive chat, no Claude wrapper
