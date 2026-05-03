@@ -31,8 +31,7 @@ const DEFAULT_CONFIG = {
 // maxNewTokens: used only in CLI mode; server mode uses -1 (unlimited, client controls it)
 const MODEL_PRESETS = {
   "Qwen3.5-9B":  { batch: 512, ctx: 65536, maxNewTokens: 16384, reasoningBudget: 0, label: "FAST - recommended" },
-  "Qwen3.6-27B": { batch: 512, ctx: 32768, maxNewTokens: 8192,  reasoningBudget: 0, label: "BALANCED" },
-  "Qwen3.6-35B": { batch: 256, ctx: 32768, maxNewTokens: 8192,  reasoningBudget: 0, label: "HEAVY - slow" },
+  "Qwen3.6-35B": { batch: 256, ctx: 65536, maxNewTokens: 8192,  reasoningBudget: 0, label: "HEAVY - slow" },
 };
 
 function getPreset(filename) {
@@ -257,7 +256,7 @@ async function main() {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
       CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000"
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "65536"
     };
 
     console.log(chalk.green("\nLaunching Claude...\n"));
