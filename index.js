@@ -15,6 +15,8 @@ const DEFAULT_CONFIG = {
   host: "127.0.0.1",
   port: 8090,
   threads: 16,
+  decodeThreads: 8,
+  batchThreads: 16,
   opencode: {
     // Set to false or "notify" to suppress auto-updates
     autoupdate: false,
@@ -30,23 +32,60 @@ const DEFAULT_CONFIG = {
 // reasoningBudget: 0 = thinking fully disabled, N = hard token cap
 // maxNewTokens: used only in CLI mode; server mode uses -1 (unlimited, client controls it)
 const MODEL_PRESETS = {
-  "Qwen3.5-9B":  { batch: 512, ctx: 65536, maxNewTokens: 16384, reasoningBudget: 0, label: "FAST - recommended" },
-  "Qwen3.6-35B": { batch: 256, ctx: 65536, maxNewTokens: 8192,  reasoningBudget: 0, label: "HEAVY - slow" },
-  "Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf": { batch: 1024, ctx: 65536, maxNewTokens: 8192, reasoningBudget: 0, label: "CODER - for code tasks" }
+  "Qwen3.5-9B":  { batch: 1024, ubatch: 512, ctx: 65536, maxNewTokens: 16384, reasoningBudget: 0, label: "FAST - recommended" },
+  "Qwen3.6-35B": { batch: 512,  ubatch: 256, ctx: 65536, maxNewTokens: 8192,  reasoningBudget: 0, label: "HEAVY - slow" },
+  "Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf": { batch: 512, ubatch: 256, ctx: 65536, maxNewTokens: 8192, reasoningBudget: 0, label: "CODER - for code tasks" }
+};
+
+const CONTEXT_OPTIONS = [
+  { name: "Compact 32k", value: 32768 },
+  { name: "Fast 64k", value: 65536 },
+  { name: "Balanced 128k", value: 131072 },
+  { name: "Quality 256k", value: 262144 }
+];
+
+const OPENCODE_COMPACT_LIMITS = {
+  context: 65536,
+  output: 4096
 };
 
 function getPreset(filename) {
   for (const [key, preset] of Object.entries(MODEL_PRESETS)) {
     if (filename.includes(key)) return preset;
   }
-  return { batch: 512, ctx: 8192, maxNewTokens: 1024, label: "" };
+  return { batch: 512, ubatch: 256, ctx: 8192, maxNewTokens: 1024, reasoningBudget: 0, label: "" };
+}
+
+function toPositiveInt(value, fallback) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return fallback;
+  return Math.floor(num);
 }
 
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2));
   }
-  return JSON.parse(fs.readFileSync(CONFIG_PATH));
+
+  const loadedConfig = JSON.parse(fs.readFileSync(CONFIG_PATH));
+  const mergedConfig = {
+    ...DEFAULT_CONFIG,
+    ...loadedConfig,
+    opencode: {
+      ...DEFAULT_CONFIG.opencode,
+      ...(loadedConfig.opencode || {})
+    }
+  };
+
+  mergedConfig.threads = toPositiveInt(mergedConfig.threads, DEFAULT_CONFIG.threads);
+  mergedConfig.decodeThreads = toPositiveInt(mergedConfig.decodeThreads, Math.min(8, mergedConfig.threads));
+  mergedConfig.batchThreads = toPositiveInt(mergedConfig.batchThreads, Math.max(mergedConfig.decodeThreads, mergedConfig.threads));
+
+  if (JSON.stringify(loadedConfig) !== JSON.stringify(mergedConfig)) {
+    saveConfig(mergedConfig);
+  }
+
+  return mergedConfig;
 }
 
 function saveConfig(config) {
@@ -86,6 +125,35 @@ function waitForServer(url) {
     };
     check();
   });
+}
+
+function getRuntimeSettings(preset, profile, contextSize, config) {
+  const base = {
+    batch: preset.batch,
+    ubatch: preset.ubatch,
+    ctx: contextSize,
+    decodeThreads: config.decodeThreads,
+    batchThreads: config.batchThreads
+  };
+
+  if (profile === "quality") {
+    return {
+      ...base,
+      decodeThreads: Math.max(base.decodeThreads, Math.min(config.threads, 12)),
+      batchThreads: Math.max(base.batchThreads, config.threads)
+    };
+  }
+
+  if (profile === "balanced") {
+    return base;
+  }
+
+  // fast profile
+  return {
+    ...base,
+    decodeThreads: Math.min(base.decodeThreads, 8),
+    batchThreads: Math.max(base.batchThreads, Math.min(config.threads * 2, 24))
+  };
 }
 
 async function main() {
@@ -138,6 +206,36 @@ async function main() {
   const modelName = path.parse(selectedModel).name;
   const preset = getPreset(selectedModel);
 
+  const { performanceProfile } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "performanceProfile",
+      message: "Performance profile:",
+      default: "fast",
+      choices: [
+        { name: "Fast      (best token/s)", value: "fast" },
+        { name: "Balanced  (recommended default)", value: "balanced" },
+        { name: "Quality   (slower, better stability)", value: "quality" }
+      ]
+    }
+  ]);
+
+  const contextDefault = performanceProfile === "quality" ? 262144 : performanceProfile === "balanced" ? 131072 : 65536;
+  const { selectedContextSize } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "selectedContextSize",
+      message: "Context window:",
+      default: contextDefault,
+      choices: CONTEXT_OPTIONS.map(option => ({ name: option.name, value: option.value }))
+    }
+  ]);
+
+  const runtime = getRuntimeSettings(preset, performanceProfile, selectedContextSize, config);
+  // Keep headroom for system/tool wrappers so OpenCode does not push right to n_ctx.
+  const opencodeContextLimit = Math.min(Math.max(2048, runtime.ctx - 4096), OPENCODE_COMPACT_LIMITS.context);
+  const opencodeOutputLimit = Math.min(preset.maxNewTokens, OPENCODE_COMPACT_LIMITS.output);
+
   // Select run mode
   const { mode } = await inquirer.prompt([
     {
@@ -182,24 +280,28 @@ async function main() {
 
   console.log(chalk.cyan("\n================================"));
   console.log(`Model  : ${modelName}`);
+  console.log(`Profile: ${performanceProfile}`);
   console.log(`Mode   : ${mode === "server" ? "llama-server" : "llama-cli"}`);
   if (mode === "server") {
     console.log(`Web UI : ${webUI ? "enabled" : "disabled"}`);
     console.log(`Client : ${client === "none" ? "none" : client}`);
   }
-  console.log(`Batch  : ${preset.batch}`);
-  console.log(`Context: ${preset.ctx}`);
+  console.log(`Batch  : ${runtime.batch}`);
+  console.log(`UBatch : ${runtime.ubatch}`);
+  console.log(`Threads: decode=${runtime.decodeThreads}, batch=${runtime.batchThreads}`);
+  console.log(`Context: ${runtime.ctx}`);
   console.log(chalk.cyan("================================\n"));
 
   // Flags shared by both modes
   const commonArgs = [
     "-m", modelPath,
     "-ngl", "999",
-    "-b", String(preset.batch),
-    "-t", String(config.threads),
-    "-tb", String(config.threads),
+    "-b", String(runtime.batch),
+    "--ubatch-size", String(runtime.ubatch),
+    "-t", String(runtime.decodeThreads),
+    "-tb", String(runtime.batchThreads),
     "-fa", "on",
-    "--ctx-size", String(preset.ctx),
+    "--ctx-size", String(runtime.ctx),
     "--cache-type-k", "q4_0",
     "--cache-type-v", "q4_0",
     "--temp", "0.6",
@@ -284,8 +386,8 @@ async function main() {
             [modelName]: {
               name: modelName,
               limit: {
-                context: preset.ctx,
-                output: preset.maxNewTokens
+                context: opencodeContextLimit,
+                output: opencodeOutputLimit
               }
             }
           }
@@ -300,6 +402,7 @@ async function main() {
     };
 
     console.log(chalk.green("\nLaunching OpenCode...\n"));
+    console.log(chalk.yellow(`OpenCode compact limits: context=${opencodeContextLimit}, output=${opencodeOutputLimit} (server ctx: ${runtime.ctx})`));
 
     await execa("opencode", [], {
       stdio: "inherit",
