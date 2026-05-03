@@ -145,15 +145,48 @@ async function main() {
       name: "mode",
       message: "Run mode:",
       choices: [
-        { name: "Server  (API mode → launches Claude CLI)", value: "server" },
-        { name: "CLI     (interactive chat in terminal)",   value: "cli" }
+        { name: "Server  (API mode → optionally launches a client)", value: "server" },
+        { name: "CLI     (interactive chat in terminal)",             value: "cli" }
       ]
     }
   ]);
 
+  let webUI = false;
+  let client = null;
+
+  if (mode === "server") {
+    const { enableWebUI } = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "enableWebUI",
+        message: "Enable llama-server web UI?",
+        default: false
+      }
+    ]);
+    webUI = enableWebUI;
+
+    const { selectedClient } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "selectedClient",
+        message: "Launch client after server starts:",
+        choices: [
+          { name: "Claude Code",      value: "claude" },
+          { name: "OpenCode",         value: "opencode" },
+          { name: "None (server only)", value: "none" }
+        ]
+      }
+    ]);
+    client = selectedClient;
+  }
+
   console.log(chalk.cyan("\n================================"));
   console.log(`Model  : ${modelName}`);
   console.log(`Mode   : ${mode === "server" ? "llama-server" : "llama-cli"}`);
+  if (mode === "server") {
+    console.log(`Web UI : ${webUI ? "enabled" : "disabled"}`);
+    console.log(`Client : ${client === "none" ? "none" : client}`);
+  }
   console.log(`Batch  : ${preset.batch}`);
   console.log(`Context: ${preset.ctx}`);
   console.log(chalk.cyan("================================\n"));
@@ -191,7 +224,7 @@ async function main() {
     return;
   }
 
-  // Server mode — open in a separate tab so logs don't clash with Claude
+  // Server mode — open in a separate tab so logs don't clash with the client
   // --n-predict -1 = unlimited; the client (Claude/OpenCode) controls max_tokens per request
   const serverArgs = [
     ...commonArgs,
@@ -199,27 +232,20 @@ async function main() {
     "--tools", "all",
     "--jinja",
     "--host", config.host,
-    "--port", String(config.port)
+    "--port", String(config.port),
+    ...(!webUI ? ["--no-webui"] : [])
   ];
 
   spawnInNewTab("Llama Server", "llama-server", serverArgs);
 
   const spinner = ora("Waiting for llama-server to be ready...").start();
   await waitForServer(`http://${config.host}:${config.port}`);
-  spinner.succeed("Server ready  (see \"Llama Server\" tab for logs)");
+  spinner.succeed(`Server ready  (see "Llama Server" tab for logs)${webUI ? `  ·  Web UI: http://${config.host}:${config.port}` : ""}`);
 
-  // Select client
-  const { client } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "client",
-      message: "Select client:",
-      choices: [
-        { name: "Claude Code", value: "claude" },
-        { name: "OpenCode",    value: "opencode" }
-      ]
-    }
-  ]);
+  if (client === "none") {
+    console.log(chalk.yellow("\nServer running. Close the \"Llama Server\" tab to stop it."));
+    return;
+  }
 
   if (client === "claude") {
     const env = {
