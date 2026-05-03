@@ -29,9 +29,9 @@ const DEFAULT_CONFIG = {
 // Per-model presets matched by filename substring
 // reasoningBudget: 0 = thinking fully disabled, N = hard token cap
 const MODEL_PRESETS = {
-  "Qwen3.5-9B":  { batch: 512, ctx: 262144, maxNewTokens: 8192, reasoningBudget: 0, label: "FAST - recommended" },
-  "Qwen3.6-27B": { batch: 512,  ctx: 32768, maxNewTokens: 8192, reasoningBudget: 0, label: "BALANCED" },
-  "Qwen3.6-35B": { batch: 256,  ctx: 262144, maxNewTokens: 8192, reasoningBudget: 0, label: "HEAVY - slow" },
+  "Qwen3.5-9B":  { batch: 512, ctx: 262144, maxNewTokens: 4096, reasoningBudget: 0, label: "FAST - recommended" },
+  "Qwen3.6-27B": { batch: 512,  ctx: 32768, maxNewTokens: 4096, reasoningBudget: 0, label: "BALANCED" },
+  "Qwen3.6-35B": { batch: 256,  ctx: 262144, maxNewTokens: 4096, reasoningBudget: 0, label: "HEAVY - slow" },
 };
 
 function getPreset(filename) {
