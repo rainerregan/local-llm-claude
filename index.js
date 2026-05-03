@@ -14,14 +14,24 @@ const DEFAULT_CONFIG = {
   modelDir: path.join(__dirname, "models"),
   host: "127.0.0.1",
   port: 8090,
-  threads: 16
+  threads: 16,
+  opencode: {
+    // Set to false or "notify" to suppress auto-updates
+    autoupdate: false,
+    // "manual" | "auto" | "disabled"
+    share: "disabled",
+    // Tool permissions: "allow" | "ask" | "deny"
+    // e.g. { "bash": "ask", "edit": "ask" }
+    permission: {}
+  }
 };
 
 // Per-model presets matched by filename substring
+// reasoningBudget: 0 = thinking fully disabled, N = hard token cap
 const MODEL_PRESETS = {
-  "Qwen3.5-9B":  { batch: 4096, ctx: 262144, maxNewTokens: 4096, label: "FAST - recommended" },
-  "Qwen3.6-27B": { batch: 512, ctx: 262144, maxNewTokens: 4096, label: "BALANCED" },
-  "Qwen3.6-35B": { batch: 4096, ctx: 262144, maxNewTokens: 4096, label: "HEAVY - slow" },
+  "Qwen3.5-9B":  { batch: 512, ctx: 262144, maxNewTokens: 8192, reasoningBudget: 0, label: "FAST - recommended" },
+  "Qwen3.6-27B": { batch: 512,  ctx: 32768, maxNewTokens: 8192, reasoningBudget: 0, label: "BALANCED" },
+  "Qwen3.6-35B": { batch: 256,  ctx: 262144, maxNewTokens: 8192, reasoningBudget: 0, label: "HEAVY - slow" },
 };
 
 function getPreset(filename) {
@@ -165,9 +175,9 @@ async function main() {
     "--min-p", "0.0",
     "--presence-penalty", "0.0",
     "--repeat-penalty", "1.0",
-    "--stream", // important for Claude to start generating before the full response is ready
-    "--reasoning-budget", "1024",
-    "--reasoning-budget-message", "... maximum reasoning budget reached, answering now..."
+    "--reasoning-budget", String(preset.reasoningBudget),
+    "--reasoning-budget-message", "... thinking budget reached, answering now...",
+    "--chat-template-kwargs", JSON.stringify({ system: "You are a helpful coding assistant. Answer concisely.", "enable_thinking": false }) // Disable llama.cpp's built-in "thinking" feature since it doesn't work well with Claude's prompting and can cause issues with long contexts. We'll rely on the reasoning budget to control thinking instead.
   ];
 
   // CLI mode — interactive chat, no Claude wrapper
@@ -195,27 +205,80 @@ async function main() {
   await waitForServer(`http://${config.host}:${config.port}`);
   spinner.succeed("Server ready  (see \"Llama Server\" tab for logs)");
 
-  // Setup Claude env
-  const env = {
-    ...process.env,
-    ANTHROPIC_AUTH_TOKEN: "not_set",
-    ANTHROPIC_API_KEY: "not_set",
-    ANTHROPIC_BASE_URL: `http://${config.host}:${config.port}`,
-    ANTHROPIC_MODEL: modelName,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
-    CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000"
-  };
+  // Select client
+  const { client } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "client",
+      message: "Select client:",
+      choices: [
+        { name: "Claude Code", value: "claude" },
+        { name: "OpenCode",    value: "opencode" }
+      ]
+    }
+  ]);
 
-  console.log(chalk.green("\nLaunching Claude...\n"));
+  if (client === "claude") {
+    const env = {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "not_set",
+      ANTHROPIC_API_KEY: "not_set",
+      ANTHROPIC_BASE_URL: `http://${config.host}:${config.port}`,
+      ANTHROPIC_MODEL: modelName,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+      CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000"
+    };
 
-  await execa("claude", ["--model", modelName], {
-    stdio: "inherit",
-    env
-  });
+    console.log(chalk.green("\nLaunching Claude...\n"));
 
-  console.log(chalk.yellow("\nClaude exited. Close the \"Llama Server\" tab to stop the server."));
+    await execa("claude", ["--model", modelName], {
+      stdio: "inherit",
+      env
+    });
+
+    console.log(chalk.yellow("\nClaude exited. Close the \"Llama Server\" tab to stop the server."));
+  } else {
+    const oc = config.opencode;
+    const opencodeConfig = {
+      "$schema": "https://opencode.ai/config.json",
+      provider: {
+        "llama.cpp": {
+          npm: "@ai-sdk/openai-compatible",
+          name: "llama-server (local)",
+          options: {
+            baseURL: `http://${config.host}:${config.port}/v1`
+          },
+          models: {
+            [modelName]: {
+              name: modelName,
+              stream: true,
+              limit: {
+                context: preset.ctx,
+                output: preset.maxNewTokens
+              }
+            }
+          }
+        }
+      },
+      model: `llama.cpp/${modelName}`
+    };
+
+    const env = {
+      ...process.env,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig)
+    };
+
+    console.log(chalk.green("\nLaunching OpenCode...\n"));
+
+    await execa("opencode", [], {
+      stdio: "inherit",
+      env
+    });
+
+    console.log(chalk.yellow("\nOpenCode exited. Close the \"Llama Server\" tab to stop the server."));
+  }
 }
 
 main();
