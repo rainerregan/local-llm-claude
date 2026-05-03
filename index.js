@@ -32,6 +32,7 @@ const DEFAULT_CONFIG = {
 const MODEL_PRESETS = {
   "Qwen3.5-9B":  { batch: 512, ctx: 65536, maxNewTokens: 16384, reasoningBudget: 0, label: "FAST - recommended" },
   "Qwen3.6-35B": { batch: 256, ctx: 65536, maxNewTokens: 8192,  reasoningBudget: 0, label: "HEAVY - slow" },
+  "Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf": { batch: 1024, ctx: 65536, maxNewTokens: 8192, reasoningBudget: 0, label: "CODER - for code tasks" }
 };
 
 function getPreset(filename) {
@@ -278,6 +279,7 @@ async function main() {
           options: {
             baseURL: `http://${config.host}:${config.port}/v1`
           },
+          stream: true,
           models: {
             [modelName]: {
               name: modelName,
