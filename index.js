@@ -34,6 +34,7 @@ const DEFAULT_CONFIG = {
 const MODEL_PRESETS = {
   "Qwen3.5-9B":  { batch: 1024, ubatch: 512, ctx: 65536, maxNewTokens: 16384, reasoningBudget: 0, label: "FAST - recommended" },
   "Qwen3.6-35B": { batch: 512,  ubatch: 256, ctx: 65536, maxNewTokens: 8192,  reasoningBudget: 0, label: "HEAVY - slow" },
+  "qwen2.5-coder-14b-instruct-q4_k_m.gguf": { batch: 512, ubatch: 256, ctx: 65536, maxNewTokens: 8192, reasoningBudget: 0, label: "CODER - for code tasks" },
   "Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf": { batch: 512, ubatch: 256, ctx: 65536, maxNewTokens: 8192, reasoningBudget: 0, label: "CODER - for code tasks" }
 };
 
@@ -310,9 +311,10 @@ async function main() {
     "--min-p", "0.0",
     "--presence-penalty", "0.0",
     "--repeat-penalty", "1.0",
+    "--flash-attn", "on",
     "--reasoning-budget", String(preset.reasoningBudget),
     "--reasoning-budget-message", "... thinking budget reached, answering now...",
-    "--chat-template-kwargs", JSON.stringify({ system: "You are a helpful coding assistant. Answer concisely.", "enable_thinking": false }) // Disable llama.cpp's built-in "thinking" feature since it doesn't work well with Claude's prompting and can cause issues with long contexts. We'll rely on the reasoning budget to control thinking instead.
+    "--chat-template-kwargs", JSON.stringify({ "enable_thinking": false }) // Disable llama.cpp's built-in "thinking" feature since it doesn't work well with Claude's prompting and can cause issues with long contexts. We'll rely on the reasoning budget to control thinking instead.
   ];
 
   // CLI mode — interactive chat, no Claude wrapper
